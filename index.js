@@ -1,5 +1,7 @@
-import React, { Component, PropTypes } from 'react';
+import React, { Component } from 'react';
+import PropTypes from "prop-types";
 import { View, StyleSheet, Image, TouchableOpacity, Platform, NativeModules } from 'react-native';
+import resolveAssetSource from 'react-native/Libraries/Image/resolveAssetSource';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import Video from 'react-native-video';
 const styles = StyleSheet.create({
@@ -219,6 +221,13 @@ export default class VideoPlayer extends Component {
     if(Platform.OS === "android")
     {
       var uri = this.props.video.uri;
+      if (!uri && typeof this.props.video === 'number') {
+        const resolveSource = resolveAssetSource(this.props.video) || {};
+        uri = resolveSource.uri || '';
+        if (uri && uri.match(/^\//)) {
+          uri = `file://${uri}`;
+        }
+      }
       NativeModules.BridgeModule.showFullscreen(uri);
     }
     else
