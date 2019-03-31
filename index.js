@@ -1,9 +1,12 @@
 import React, { Component } from 'react';
-import PropTypes from "prop-types";
-import { View, StyleSheet, Image, TouchableOpacity, Platform, NativeModules } from 'react-native';
+import PropTypes from 'prop-types';
+import { View, StyleSheet, Image, TouchableOpacity, Platform, NativeModules, ImageBackground, ViewPropTypes } from 'react-native';
 import resolveAssetSource from 'react-native/Libraries/Image/resolveAssetSource';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import Video from 'react-native-video';
+
+const BackgroundImage = ImageBackground || Image; // fall back to Image if RN < 0.46
+
 const styles = StyleSheet.create({
   preloadingPlaceholder: {
     backgroundColor: 'black',
@@ -93,6 +96,7 @@ export default class VideoPlayer extends Component {
     this.state = {
       isStarted: props.autoplay,
       isPlaying: props.autoplay,
+      hasEnded: false,
       width: 200,
       progress: 0,
       isMuted: props.defaultMuted,
@@ -150,10 +154,16 @@ export default class VideoPlayer extends Component {
   }
 
   onStartPress() {
-    this.setState({
+    if (this.props.onStart) {
+      this.props.onStart();
+    }
+
+    this.setState(state => ({
       isPlaying: true,
       isStarted: true,
-    });
+      hasEnded: false,
+      progress: state.progress === 1 ? 0 : state.progress,
+    }));
 
     this.hideControls();
     if(this.props.onStartPress){
@@ -178,15 +188,20 @@ export default class VideoPlayer extends Component {
       this.props.onEnd(event);
     }
 
-    if (this.props.endWithThumbnail) {
-      this.setState({ isStarted: false });
+    if (this.props.endWithThumbnail || this.props.endThumbnail) {
+      this.setState({ isStarted: false, hasEnded: true });
+      this.player.dismissFullscreenPlayer();
     }
 
-    this.player.seek(0);
+    this.setState({ progress: 1 });
+
     if (!this.props.loop) {
-      this.setState({
-        isPlaying: false,
-      });
+      this.setState(
+        { isPlaying: false },
+        () => this.player && this.player.seek(0)
+      );
+    } else {
+      this.player.seek(0);
     }
   }
 
@@ -211,10 +226,15 @@ export default class VideoPlayer extends Component {
   }
 
   onMutePress() {
+    const isMuted = !this.state.isMuted;
+    if (this.props.onMutePress) {
+      this.props.onMutePress(isMuted);
+    }
     this.setState({
-      isMuted: !this.state.isMuted,
+      isMuted,
     });
     this.showControls();
+    
   }
 
   onToggleFullScreen() {
@@ -320,6 +340,33 @@ export default class VideoPlayer extends Component {
     this.hideControls();
   }
 
+  seek(t) {
+    this.player.seek(t);
+  }
+
+  stop() {
+    this.setState({
+      isPlaying: false,
+      progress: 0,
+    });
+    this.seek(0);
+    this.showControls();
+  }
+
+  pause() {
+    this.setState({
+      isPlaying: false,
+    });
+    this.showControls();
+  }
+
+  resume() {
+    this.setState({
+      isPlaying: true,
+    });
+    this.showControls();
+  }
+
   renderStartButton() {
     const { customStyles } = this.props;
     return (
@@ -332,10 +379,10 @@ export default class VideoPlayer extends Component {
     );
   }
 
-  renderThumbnail() {
-    const { thumbnail, style, customStyles, ...props } = this.props;
+  renderThumbnail(thumbnail) {
+    const { style, customStyles, ...props } = this.props;
     return (
-      <Image
+      <BackgroundImage
         {...props}
         style={[
           styles.thumbnail,
@@ -346,12 +393,12 @@ export default class VideoPlayer extends Component {
         source={thumbnail}
       >
         {this.renderStartButton()}
-      </Image>
+      </BackgroundImage>
     );
   }
 
   renderSeekBar(fullWidth) {
-    const { customStyles } = this.props;
+    const { customStyles, disableSeek } = this.props;
     return (
       <View
         style={[
@@ -369,7 +416,7 @@ export default class VideoPlayer extends Component {
             customStyles.seekBarProgress,
           ]}
         />
-        { !fullWidth ? (
+        { !fullWidth && !disableSeek ? (
           <View
             style={[
               styles.seekBarKnob,
@@ -435,6 +482,8 @@ export default class VideoPlayer extends Component {
       video,
       style,
       resizeMode,
+      pauseOnPress,
+      fullScreenOnLongPress,
       customStyles,
       ...props
     } = this.props;
@@ -450,7 +499,9 @@ export default class VideoPlayer extends Component {
           ]}
           ref={p => { this.player = p; }}
           muted={this.props.muted || this.state.isMuted}
-          paused={!this.state.isPlaying}
+          paused={this.props.paused
+            ? this.props.paused || !this.state.isPlaying
+            : !this.state.isPlaying}
           onProgress={this.onProgress}
           onEnd={this.onEnd}
           onLoad={this.onLoad}
@@ -463,7 +514,18 @@ export default class VideoPlayer extends Component {
             { marginTop: -this.getSizeStyles().height },
           ]}
         >
-          <TouchableOpacity style={styles.overlayButton} onPress={this.showControls} />
+          <TouchableOpacity
+            style={styles.overlayButton}
+            onPress={() => {
+              this.showControls();
+              if (pauseOnPress)
+                this.onPlayPress();
+            }}
+            onLongPress={() => {
+              if (fullScreenOnLongPress && Platform.OS !== 'android')
+                this.onToggleFullScreen();
+            }}
+          />
         </View>
         {((!this.state.isPlaying) || this.state.isControlsVisible)
           ? this.renderControls() : this.renderSeekBar(true)}
@@ -472,11 +534,14 @@ export default class VideoPlayer extends Component {
   }
 
   renderContent() {
-    const { thumbnail, style } = this.props;
-    const { isStarted } = this.state;
+    const { thumbnail, endThumbnail, style } = this.props;
+    const { isStarted, hasEnded } = this.state;
 
-    if (!isStarted && thumbnail) {
-      return this.renderThumbnail();
+    if (hasEnded && endThumbnail) {
+      return this.renderThumbnail(endThumbnail);
+    }
+    else if (!isStarted && thumbnail) {
+      return this.renderThumbnail(thumbnail);
     } else if (!isStarted) {
       return (
         <View style={[styles.preloadingPlaceholder, this.getSizeStyles(), style]}>
@@ -499,10 +564,12 @@ export default class VideoPlayer extends Component {
 VideoPlayer.propTypes = {
   video: Video.propTypes.source,
   thumbnail: Image.propTypes.source,
+  endThumbnail: Image.propTypes.source,
   videoWidth: PropTypes.number,
   videoHeight: PropTypes.number,
   duration: PropTypes.number,
   autoplay: PropTypes.bool,
+  paused: PropTypes.bool,
   defaultMuted: PropTypes.bool,
   muted: PropTypes.bool,
   style: View.propTypes.style,
@@ -512,6 +579,9 @@ VideoPlayer.propTypes = {
   resizeMode: Video.propTypes.resizeMode,
   hideControlsOnStart: PropTypes.bool,
   endWithThumbnail: PropTypes.bool,
+  disableSeek: PropTypes.bool,
+  pauseOnPress: PropTypes.bool,
+  fullScreenOnLongPress: PropTypes.bool,
   customStyles: PropTypes.shape({
     wrapper: View.propTypes.style,
     video: Video.propTypes.style,
@@ -534,6 +604,11 @@ VideoPlayer.propTypes = {
   onEnd: PropTypes.func,
   onProgress: PropTypes.func,
   onLoad: PropTypes.func,
+  onStart: PropTypes.func,
+  onPlayPress: PropTypes.func,
+  onHideControls: PropTypes.func,
+  onShowControls: PropTypes.func,
+  onMutePress: PropTypes.func,
 };
 
 VideoPlayer.defaultProps = {
@@ -543,5 +618,8 @@ VideoPlayer.defaultProps = {
   controlsTimeout: 2000,
   loop: false,
   resizeMode: 'contain',
+  disableSeek: false,
+  pauseOnPress: false,
+  fullScreenOnLongPress: false,
   customStyles: {},
 };
